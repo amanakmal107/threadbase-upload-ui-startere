@@ -1,56 +1,180 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import apiClient from "../services/apiClient.js";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// TODO Task 1: Drag-and-drop
-//   - add onDragOver / onDragLeave / onDrop handlers to the drop zone
-//   - call e.preventDefault() in onDragOver AND onDrop
-//   - read the dropped file from e.dataTransfer.files[0]
-//   - toggle an `isDragging` state to apply the "dragging" class
-//
-// TODO Task 2: Client-side validation
-//   - before uploading, check file.type is an allowed image type
-//   - and file.size <= 5 * 1024 * 1024 (5MB)
-//   - show an error and stop if invalid
-//
-// TODO Task 3: Local preview
-//   - const url = URL.createObjectURL(file); use it as <img src>
-//   - revoke it with URL.revokeObjectURL in a useEffect cleanup
-//
-// TODO Task 4: Axios upload with progress
-//   - build FormData, append the file under the name "avatar"
-//   - apiClient.post("/api/upload", formData, { onUploadProgress: ... })
-//   - percent = Math.round((event.loaded * 100) / event.total)
-//   - DO NOT set a Content-Type header
-// ─────────────────────────────────────────────────────────────────────────────
 
 const MAX_SIZE = 5 * 1024 * 1024;
 const ALLOWED = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 
 export default function AvatarUploader() {
   const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [error, setError] = useState("");
+  const [progress, setProgress] = useState(0);
+  const [uploadedUrl, setUploadedUrl] = useState("");
+  const [isUploading, setIsUploading] = useState(false);
   const inputRef = useRef(null);
 
-  // Stub upload - replace with FormData + Axios onUploadProgress (Task 4).
+  // Task 3: Local preview with cleanup on change / unmount
+  useEffect(() => {
+    if (!file) {
+      setPreview(null);
+      return;
+    }
+
+    const url = URL.createObjectURL(file);
+    setPreview(url);
+
+    return () => {
+      URL.revokeObjectURL(url);
+    };
+  }, [file]);
+
+  // Task 2: Client-side validation
+  function validateAndSelectFile(selectedFile) {
+    if (!selectedFile) return;
+
+    setError("");
+    setProgress(0);
+    setUploadedUrl("");
+
+    // Validate type
+    if (!ALLOWED.includes(selectedFile.type)) {
+      setError("Only image files (JPEG, PNG, WebP, GIF) are allowed");
+      setFile(null);
+      return;
+    }
+
+    // Validate size (max 5MB)
+    if (selectedFile.size > MAX_SIZE) {
+      setError("File too large (max 5MB)");
+      setFile(null);
+      return;
+    }
+
+    setFile(selectedFile);
+  }
+
+  // Task 1: Drag-and-drop handlers
+  function handleDragOver(e) {
+    e.preventDefault();
+    setIsDragging(true);
+  }
+
+  function handleDragLeave(e) {
+    e.preventDefault();
+    setIsDragging(false);
+  }
+
+  function handleDrop(e) {
+    e.preventDefault();
+    setIsDragging(false);
+    const droppedFile = e.dataTransfer.files?.[0];
+    if (droppedFile) {
+      validateAndSelectFile(droppedFile);
+    }
+  }
+
+  function handleInputChange(e) {
+    const selectedFile = e.target.files?.[0];
+    if (selectedFile) {
+      validateAndSelectFile(selectedFile);
+    }
+    e.target.value = "";
+  }
+
+  // Task 4: Axios upload with progress
   async function upload() {
     if (!file) return;
-    console.log("TODO: upload", file.name);
+
+    // Validate again before network request
+    if (!ALLOWED.includes(file.type)) {
+      setError("Only image files (JPEG, PNG, WebP, GIF) are allowed");
+      return;
+    }
+
+    if (file.size > MAX_SIZE) {
+      setError("File too large (max 5MB)");
+      return;
+    }
+
+    setError("");
+    setProgress(0);
+    setIsUploading(true);
+
+    const formData = new FormData();
+    formData.append("avatar", file);
+
+    try {
+      // NOTE: Do not set Content-Type header manually - let browser set it with boundary
+      const response = await apiClient.post("/api/upload", formData, {
+        onUploadProgress: (event) => {
+          if (event.total) {
+            const percent = Math.round((event.loaded * 100) / event.total);
+            setProgress(percent);
+          }
+        },
+      });
+
+      setUploadedUrl(response.data.url);
+    } catch (err) {
+      const msg = err.response?.data?.error || err.message || "Upload failed";
+      setError(msg);
+      setProgress(0);
+    } finally {
+      setIsUploading(false);
+    }
   }
 
   return (
     <div>
-      <div className="drop-zone" onClick={() => inputRef.current.click()}>
-        <p>Drag an image here, or click to choose</p>
+      <div
+        className={`drop-zone ${isDragging ? "dragging" : ""}`}
+        onClick={() => inputRef.current?.click()}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        {preview ? (
+          <div>
+            <img src={preview} alt="Avatar preview" className="preview" />
+            <p style={{ marginTop: "0.5rem", fontSize: "0.875rem" }}>
+              {file?.name} (Click or drop to replace)
+            </p>
+          </div>
+        ) : (
+          <p>Drag an image here, or click to choose</p>
+        )}
         <input
           ref={inputRef}
           type="file"
           accept="image/*"
           hidden
-          onChange={(e) => setFile(e.target.files[0])}
+          onChange={handleInputChange}
         />
       </div>
 
-      <button onClick={upload} disabled={!file}>Upload</button>
+      {error && <p className="error">{error}</p>}
+
+      {progress > 0 && (
+        <div className="bar">
+          <div className="fill" style={{ width: `${progress}%` }} />
+        </div>
+      )}
+
+      <div style={{ marginTop: "1rem", display: "flex", gap: "1rem", alignItems: "center" }}>
+        <button onClick={upload} disabled={!file || isUploading}>
+          {isUploading ? `Uploading (${progress}%)` : "Upload"}
+        </button>
+        {progress > 0 && (
+          <span style={{ fontSize: "0.875rem", color: "#64748b" }}>{progress}%</span>
+        )}
+      </div>
+
+      {uploadedUrl && (
+        <p style={{ marginTop: "0.75rem", color: "#16a34a", fontSize: "0.875rem" }}>
+          Upload successful! URL: <code>{uploadedUrl}</code>
+        </p>
+      )}
     </div>
   );
 }
